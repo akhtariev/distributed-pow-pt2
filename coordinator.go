@@ -68,6 +68,7 @@ type Coordinator struct {
 type CoordMineArgs struct {
 	Nonce            []uint8
 	NumTrailingZeros uint
+	Token            tracing.TracingToken
 }
 
 type CoordMineResponse struct {
@@ -81,6 +82,7 @@ type CoordResultArgs struct {
 	NumTrailingZeros uint
 	WorkerByte       uint8
 	Secret           []uint8
+	Token            tracing.TracingToken
 }
 
 type ResultChan chan CoordResultArgs
@@ -123,7 +125,9 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 // Mine is a blocking RPC from powlib instructing the Coordinator to solve a specific pow instance
 func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) error {
 
-	c.tracer.RecordAction(CoordinatorMine{
+	trace := c.tracer.ReceiveToken(args.Token)
+
+	trace.RecordAction(CoordinatorMine{
 		NumTrailingZeros: args.NumTrailingZeros,
 		Nonce:            args.Nonce,
 	})
@@ -145,9 +149,10 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       w.workerByte,
 			WorkerBits:       c.workerBits,
+			Token:            args.Token,
 		}
 
-		c.tracer.RecordAction(CoordinatorWorkerMine{
+		trace.RecordAction(CoordinatorWorkerMine{
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       args.WorkerByte,
@@ -173,8 +178,9 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       w.workerByte,
+			Token:            args.Token,
 		}
-		c.tracer.RecordAction(CoordinatorWorkerCancel{
+		trace.RecordAction(CoordinatorWorkerCancel{
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       args.WorkerByte,
@@ -207,7 +213,7 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 	reply.Nonce = result.Nonce
 	reply.Secret = result.Secret
 
-	c.tracer.RecordAction(CoordinatorSuccess{
+	trace.RecordAction(CoordinatorSuccess{
 		Nonce:            reply.Nonce,
 		NumTrailingZeros: reply.NumTrailingZeros,
 		Secret:           reply.Secret,
@@ -219,7 +225,8 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 // back to the Coordinator
 func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *struct{}) error {
 	if args.Secret != nil {
-		c.tracer.RecordAction(CoordinatorWorkerResult{
+		trace := c.tracer.ReceiveToken(args.Token)
+		trace.RecordAction(CoordinatorWorkerResult{
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       args.WorkerByte,
