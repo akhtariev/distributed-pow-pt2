@@ -31,6 +31,13 @@ func main() {
 			WorkerByte:       res.WorkerByte,
 			Secret:           res.Secret,
 		}
-		worker.Coordinator.Go("CoordRPCHandler.Result", result, &struct{}{}, nil)
+
+		go func() {
+			var calleeReply *distpow.Reply
+			err = worker.Coordinator.Call("CoordRPCHandler.Result", result, &calleeReply)
+			if err == nil {
+				worker.Tracer.ReceiveToken(calleeReply.Token)
+			}
+		}()
 	}
 }

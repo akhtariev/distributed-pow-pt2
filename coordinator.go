@@ -75,6 +75,7 @@ type CoordMineResponse struct {
 	Nonce            []uint8
 	NumTrailingZeros uint
 	Secret           []uint8
+	Token            tracing.TracingToken
 }
 
 type CoordResultArgs struct {
@@ -97,6 +98,10 @@ type CoordRPCHandler struct {
 type CoordinatorMineTasks struct {
 	mu    sync.Mutex
 	tasks map[string]ResultChan
+}
+
+type Reply struct {
+	Token tracing.TracingToken
 }
 
 func NewCoordinator(config CoordinatorConfig) *Coordinator {
@@ -143,6 +148,7 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 	resultChan := make(chan CoordResultArgs, workerCount)
 	c.mineTasks.set(args.Nonce, args.NumTrailingZeros, resultChan)
 
+	var calleeReply *Reply
 	for _, w := range c.workers {
 		args := WorkerMineArgs{
 			Nonce:            args.Nonce,
@@ -157,11 +163,11 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       args.WorkerByte,
 		})
-
-		err := w.client.Call("WorkerRPCHandler.Mine", args, &struct{}{})
+		err := w.client.Call("WorkerRPCHandler.Mine", args, &calleeReply)
 		if err != nil {
 			return err
 		}
+		c.tracer.ReceiveToken(calleeReply.Token)
 	}
 
 	// wait for at least one result
@@ -185,10 +191,11 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       args.WorkerByte,
 		})
-		err := w.client.Call("WorkerRPCHandler.Cancel", args, &struct{}{})
+		err := w.client.Call("WorkerRPCHandler.Cancel", args, &calleeReply)
 		if err != nil {
 			return err
 		}
+		c.tracer.ReceiveToken(calleeReply.Token)
 	}
 
 	log.Printf("Waiting for %d acks from workers, then we are done", workerCount)
@@ -218,14 +225,15 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 		NumTrailingZeros: reply.NumTrailingZeros,
 		Secret:           reply.Secret,
 	})
+	reply.Token = trace.GenerateToken()
 	return nil
 }
 
 // Result is a non-blocking RPC from the worker that sends the solution to some previous pow instance assignment
 // back to the Coordinator
-func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *struct{}) error {
+func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *Reply) error {
+	trace := c.tracer.ReceiveToken(args.Token)
 	if args.Secret != nil {
-		trace := c.tracer.ReceiveToken(args.Token)
 		trace.RecordAction(CoordinatorWorkerResult{
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
@@ -236,6 +244,7 @@ func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *struct{}) error {
 		log.Printf("Received worker cancel ack: %v", args)
 	}
 	c.mineTasks.get(args.Nonce, args.NumTrailingZeros) <- args
+	reply.Token = trace.GenerateToken()
 	return nil
 }
 

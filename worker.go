@@ -129,7 +129,7 @@ func (w *Worker) InitializeWorkerRPCs() error {
 
 // Mine is a non-blocking async RPC from the Coordinator
 // instructing the worker to solve a specific pow instance.
-func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *struct{}) error {
+func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *Reply) error {
 
 	// add new task
 	cancelCh := make(chan struct{}, 1)
@@ -142,12 +142,13 @@ func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *struct{}) error {
 	})
 	go miner(w, args, cancelCh)
 
+	reply.Token = trace.GenerateToken()
 	return nil
 }
 
 // Cancel is a non-blocking async RPC from the Coordinator
 // instructing the worker to stop solving a specific pow instance.
-func (w *WorkerRPCHandler) Cancel(args WorkerCancelArgs, reply *struct{}) error {
+func (w *WorkerRPCHandler) Cancel(args WorkerCancelArgs, reply *Reply) error {
 	cancelChan, ok := w.mineTasks.get(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
 	if !ok {
 		log.Fatalf("Received more than once cancellation for %s", generateWorkerTaskKey(args.Nonce, args.NumTrailingZeros, args.WorkerByte))
@@ -155,6 +156,8 @@ func (w *WorkerRPCHandler) Cancel(args WorkerCancelArgs, reply *struct{}) error 
 	cancelChan <- struct{}{}
 	// delete the task here, and the worker should terminate + send something back very soon
 	w.mineTasks.delete(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
+
+	reply.Token = w.tracer.ReceiveToken(args.Token).GenerateToken()
 	return nil
 }
 
