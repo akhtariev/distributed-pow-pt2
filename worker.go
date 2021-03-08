@@ -256,12 +256,6 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 					WorkerByte:       args.WorkerByte,
 					Secret:           nil,
 				}
-				// and log it, which satisfies the (optional) stricter interpretation of WorkerCancel
-				trace.RecordAction(WorkerCancel{
-					Nonce:            args.Nonce,
-					NumTrailingZeros: args.NumTrailingZeros,
-					WorkerByte:       args.WorkerByte,
-				})
 				return
 			}
 		}
