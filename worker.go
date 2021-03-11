@@ -62,6 +62,7 @@ type WorkerCancelArgs struct {
 	Nonce            []uint8
 	NumTrailingZeros uint
 	WorkerByte       uint8
+	Secret           []uint8
 	Token            tracing.TracingToken
 }
 
@@ -153,9 +154,9 @@ func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *Reply) error {
 	return nil
 }
 
-// Cancel is a non-blocking async RPC from the Coordinator
+// Found is a non-blocking async RPC from the Coordinator
 // instructing the worker to stop solving a specific pow instance.
-func (w *WorkerRPCHandler) Cancel(args WorkerCancelArgs, reply *Reply) error {
+func (w *WorkerRPCHandler) Found(args WorkerCancelArgs, reply *Reply) error {
 	trace := w.tracer.ReceiveToken(args.Token)
 	cancelChan, ok := w.mineTasks.get(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
 	if !ok {

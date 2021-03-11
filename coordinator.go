@@ -187,9 +187,10 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       w.workerByte,
+			Secret:           result.Secret,
 			Token:            trace.GenerateToken(),
 		}
-		err := w.client.Call("WorkerRPCHandler.Cancel", args, &calleeReply)
+		err := w.client.Call("WorkerRPCHandler.Found", args, &calleeReply)
 		if err != nil {
 			return err
 		}
