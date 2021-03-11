@@ -30,6 +30,7 @@ func main() {
 			NumTrailingZeros: res.NumTrailingZeros,
 			WorkerByte:       res.WorkerByte,
 			Secret:           res.Secret,
+			Token:            res.Token,
 		}
 
 		go func() {

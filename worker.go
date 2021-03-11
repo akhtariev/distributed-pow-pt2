@@ -33,6 +33,7 @@ type WorkerResult struct {
 	NumTrailingZeros uint
 	WorkerByte       uint8
 	Secret           []uint8
+	Token            tracing.TracingToken
 }
 
 type WorkerCancel struct {
@@ -218,6 +219,7 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 					NumTrailingZeros: args.NumTrailingZeros,
 					WorkerByte:       args.WorkerByte,
 					Secret:           nil, // nil secret treated as cancel completion
+					Token:            trace.GenerateToken(),
 				}
 				return
 			default:
@@ -239,6 +241,7 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 					NumTrailingZeros: args.NumTrailingZeros,
 					WorkerByte:       args.WorkerByte,
 					Secret:           wholeBuffer.Bytes()[wholeBufferTrunc:],
+					Token:            trace.GenerateToken(),
 				}
 				trace.RecordAction(result)
 				w.resultChan <- result
@@ -261,6 +264,7 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 					NumTrailingZeros: args.NumTrailingZeros,
 					WorkerByte:       args.WorkerByte,
 					Secret:           nil,
+					Token:            trace.GenerateToken(),
 				}
 				return
 			}
