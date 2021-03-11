@@ -28,12 +28,19 @@ type WorkerMine struct {
 	WorkerByte       uint8
 }
 
-type WorkerResult struct {
+type WorkerResultArg struct {
 	Nonce            []uint8
 	NumTrailingZeros uint
 	WorkerByte       uint8
 	Secret           []uint8
 	Token            tracing.TracingToken
+}
+
+type WorkerResult struct {
+	Nonce            []uint8
+	NumTrailingZeros uint
+	WorkerByte       uint8
+	Secret           []uint8
 }
 
 type WorkerCancel struct {
@@ -65,7 +72,7 @@ type Worker struct {
 	Tracer        *tracing.Tracer
 	Coordinator   *rpc.Client
 	mineTasks     map[string]CancelChan
-	ResultChannel chan WorkerResult
+	ResultChannel chan WorkerResultArg
 }
 
 type WorkerMineTasks struct {
@@ -77,7 +84,7 @@ type WorkerRPCHandler struct {
 	tracer      *tracing.Tracer
 	coordinator *rpc.Client
 	mineTasks   WorkerMineTasks
-	resultChan  chan WorkerResult
+	resultChan  chan WorkerResultArg
 }
 
 func NewWorker(config WorkerConfig) *Worker {
@@ -97,7 +104,7 @@ func NewWorker(config WorkerConfig) *Worker {
 		Tracer:        tracer,
 		Coordinator:   coordClient,
 		mineTasks:     make(map[string]CancelChan),
-		ResultChannel: make(chan WorkerResult),
+		ResultChannel: make(chan WorkerResultArg),
 	}
 }
 
@@ -131,17 +138,16 @@ func (w *Worker) InitializeWorkerRPCs() error {
 // Mine is a non-blocking async RPC from the Coordinator
 // instructing the worker to solve a specific pow instance.
 func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *Reply) error {
-
+	trace := w.tracer.ReceiveToken(args.Token)
 	// add new task
 	cancelCh := make(chan struct{}, 1)
 	w.mineTasks.set(args.Nonce, args.NumTrailingZeros, args.WorkerByte, cancelCh)
-	trace := w.tracer.ReceiveToken(args.Token)
 	trace.RecordAction(WorkerMine{
 		Nonce:            args.Nonce,
 		NumTrailingZeros: args.NumTrailingZeros,
 		WorkerByte:       args.WorkerByte,
 	})
-	go miner(w, args, cancelCh)
+	go miner(w, args, trace, cancelCh)
 
 	reply.Token = trace.GenerateToken()
 	return nil
@@ -150,6 +156,7 @@ func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *Reply) error {
 // Cancel is a non-blocking async RPC from the Coordinator
 // instructing the worker to stop solving a specific pow instance.
 func (w *WorkerRPCHandler) Cancel(args WorkerCancelArgs, reply *Reply) error {
+	trace := w.tracer.ReceiveToken(args.Token)
 	cancelChan, ok := w.mineTasks.get(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
 	if !ok {
 		log.Fatalf("Received more than once cancellation for %s", generateWorkerTaskKey(args.Nonce, args.NumTrailingZeros, args.WorkerByte))
@@ -158,7 +165,7 @@ func (w *WorkerRPCHandler) Cancel(args WorkerCancelArgs, reply *Reply) error {
 	// delete the task here, and the worker should terminate + send something back very soon
 	w.mineTasks.delete(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
 
-	reply.Token = w.tracer.ReceiveToken(args.Token).GenerateToken()
+	reply.Token = trace.GenerateToken()
 	return nil
 }
 
@@ -186,10 +193,9 @@ func hasNumZeroesSuffix(str []byte, numZeroes uint) bool {
 	return trailingZeroesFound >= numZeroes
 }
 
-func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
+func miner(w *WorkerRPCHandler, args WorkerMineArgs, trace *tracing.Trace, killChan <-chan struct{}) {
 	chunk := []uint8{}
 	remainderBits := 8 - (args.WorkerBits % 9)
-	trace := w.tracer.ReceiveToken(args.Token)
 
 	hashStrBuf, wholeBuffer := new(bytes.Buffer), new(bytes.Buffer)
 	if _, err := wholeBuffer.Write(args.Nonce); err != nil {
@@ -214,7 +220,7 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 					NumTrailingZeros: args.NumTrailingZeros,
 					WorkerByte:       args.WorkerByte,
 				})
-				w.resultChan <- WorkerResult{
+				w.resultChan <- WorkerResultArg{
 					Nonce:            args.Nonce,
 					NumTrailingZeros: args.NumTrailingZeros,
 					WorkerByte:       args.WorkerByte,
@@ -236,15 +242,24 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 			hashStrBuf.Reset()
 			fmt.Fprintf(hashStrBuf, "%x", hash)
 			if hasNumZeroesSuffix(hashStrBuf.Bytes(), args.NumTrailingZeros) {
+
 				result := WorkerResult{
 					Nonce:            args.Nonce,
 					NumTrailingZeros: args.NumTrailingZeros,
 					WorkerByte:       args.WorkerByte,
 					Secret:           wholeBuffer.Bytes()[wholeBufferTrunc:],
-					Token:            trace.GenerateToken(),
 				}
 				trace.RecordAction(result)
-				w.resultChan <- result
+
+				resultArg := WorkerResultArg{
+					Nonce:            result.Nonce,
+					NumTrailingZeros: result.NumTrailingZeros,
+					WorkerByte:       result.WorkerByte,
+					Secret:           result.Secret,
+					Token:            trace.GenerateToken(),
+				}
+
+				w.resultChan <- resultArg
 
 				// now, wait for the worker the receive a cancellation,
 				// which the coordinator should always send no matter what.
@@ -259,7 +274,7 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 					WorkerByte:       args.WorkerByte,
 				})
 				// ACK the cancellation; the coordinator will be waiting for this.
-				w.resultChan <- WorkerResult{
+				w.resultChan <- WorkerResultArg{
 					Nonce:            args.Nonce,
 					NumTrailingZeros: args.NumTrailingZeros,
 					WorkerByte:       args.WorkerByte,

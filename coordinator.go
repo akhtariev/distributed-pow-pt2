@@ -129,7 +129,6 @@ func NewCoordinator(config CoordinatorConfig) *Coordinator {
 
 // Mine is a blocking RPC from powlib instructing the Coordinator to solve a specific pow instance
 func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) error {
-
 	trace := c.tracer.ReceiveToken(args.Token)
 
 	trace.RecordAction(CoordinatorMine{
@@ -150,6 +149,11 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 
 	var calleeReply *Reply
 	for _, w := range c.workers {
+		trace.RecordAction(CoordinatorWorkerMine{
+			Nonce:            args.Nonce,
+			NumTrailingZeros: args.NumTrailingZeros,
+			WorkerByte:       w.workerByte,
+		})
 		args := WorkerMineArgs{
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
@@ -157,12 +161,6 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 			WorkerBits:       c.workerBits,
 			Token:            trace.GenerateToken(),
 		}
-
-		trace.RecordAction(CoordinatorWorkerMine{
-			Nonce:            args.Nonce,
-			NumTrailingZeros: args.NumTrailingZeros,
-			WorkerByte:       args.WorkerByte,
-		})
 		err := w.client.Call("WorkerRPCHandler.Mine", args, &calleeReply)
 		if err != nil {
 			return err
@@ -180,17 +178,17 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 	// after receiving one result, cancel all workers unconditionally.
 	// the cancellation takes place of an ACK for any workers sending results.
 	for _, w := range c.workers {
+		trace.RecordAction(CoordinatorWorkerCancel{
+			Nonce:            args.Nonce,
+			NumTrailingZeros: args.NumTrailingZeros,
+			WorkerByte:       w.workerByte,
+		})
 		args := WorkerCancelArgs{
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
 			WorkerByte:       w.workerByte,
 			Token:            trace.GenerateToken(),
 		}
-		trace.RecordAction(CoordinatorWorkerCancel{
-			Nonce:            args.Nonce,
-			NumTrailingZeros: args.NumTrailingZeros,
-			WorkerByte:       args.WorkerByte,
-		})
 		err := w.client.Call("WorkerRPCHandler.Cancel", args, &calleeReply)
 		if err != nil {
 			return err
