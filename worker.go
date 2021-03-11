@@ -249,6 +249,12 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, killChan <-chan struct{}) {
 				//       before we log the result we found, forcing WorkerCancel to be the last action logged, even in that case.
 				<-killChan
 
+				// and log it, which satisfies the (optional) stricter interpretation of WorkerCancel
+				trace.RecordAction(WorkerCancel{
+					Nonce:            args.Nonce,
+					NumTrailingZeros: args.NumTrailingZeros,
+					WorkerByte:       args.WorkerByte,
+				})
 				// ACK the cancellation; the coordinator will be waiting for this.
 				w.resultChan <- WorkerResult{
 					Nonce:            args.Nonce,
