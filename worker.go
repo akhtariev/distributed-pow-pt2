@@ -159,13 +159,10 @@ func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *Reply) error {
 func (w *WorkerRPCHandler) Found(args WorkerCancelArgs, reply *Reply) error {
 	trace := w.tracer.ReceiveToken(args.Token)
 	cancelChan, ok := w.mineTasks.get(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
-	if !ok {
-		log.Fatalf("Received more than once cancellation for %s", generateWorkerTaskKey(args.Nonce, args.NumTrailingZeros, args.WorkerByte))
+	if ok {
+		cancelChan <- struct{}{}
+		w.mineTasks.delete(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
 	}
-	cancelChan <- struct{}{}
-	// delete the task here, and the worker should terminate + send something back very soon
-	w.mineTasks.delete(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
-
 	reply.Token = trace.GenerateToken()
 	return nil
 }

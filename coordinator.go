@@ -92,22 +92,33 @@ type ResultChan chan CoordResultArgs
 type Secret []uint8
 
 type MineTask struct {
-	Wg           sync.WaitGroup
-	Mu           sync.Mutex
-	CachedSecret Secret
-	ResultChan   ResultChan
+	Wg            *sync.WaitGroup
+	Mu            *sync.Mutex
+	Secret        Secret
+	IsFirstResult bool
 }
 
 type CoordRPCHandler struct {
 	tracer     *tracing.Tracer
 	workers    []*WorkerClient
 	workerBits uint
-	mineTasks  TasksCache
+	tasks      TasksCache
+	cache      Cache
+}
+
+type NonceCache struct {
+	maxNumTrailingZeros uint
+	secret              Secret
+}
+
+type Cache struct {
+	mu         sync.Mutex
+	nonceCache map[string]NonceCache
 }
 
 type TasksCache struct {
 	mu    sync.Mutex
-	tasks map[string]MineTask
+	tasks map[string]*MineTask
 }
 
 type Reply struct {
@@ -146,17 +157,7 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 		Nonce:            args.Nonce,
 	})
 
-	// initialize and connect to workers (if not already connected)
-	for err := initializeWorkers(c.workers); err != nil; {
-		log.Println(err)
-		err = initializeWorkers(c.workers)
-	}
-
-	workerCount := len(c.workers)
-
-	foundChan := make(chan CoordResultArgs, workerCount)
-	secret, ok := c.mineTasks.create(args.Nonce, args.NumTrailingZeros, foundChan)
-	if ok {
+	if secret, exists := c.cache.getSecretIfExists(args.Nonce, args.NumTrailingZeros, trace); exists {
 		return c.mineComplete(
 			reply,
 			CoordinatorSuccess{
@@ -167,6 +168,18 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 			trace)
 	}
 
+	taskKey := generateCoordTaskKey(args.Nonce, args.NumTrailingZeros)
+	task := c.tasks.createTask(taskKey)
+
+	// initialize and connect to workers (if not already connected)
+	for err := initializeWorkers(c.workers); err != nil; {
+		log.Println(err)
+		err = initializeWorkers(c.workers)
+	}
+
+	workerCount := len(c.workers)
+
+	task.Wg.Add(len(c.workers))
 	var calleeReply *Reply
 	for _, w := range c.workers {
 		trace.RecordAction(CoordinatorWorkerMine{
@@ -190,31 +203,23 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 
 	log.Printf("Waiting for %d acks from workers, then we are done", workerCount)
 
-	// wait for all all workers to send back cancel ACK, ignoring results (receiving them is logged, but they have no further use here)
-	// we asked all workers to cancel, so we should setResult exactly workerCount ACKs.
-	workerAcksReceived := 0
-	for workerAcksReceived < workerCount {
-		ack := <-foundChan
-		if ack.Secret == nil {
-			log.Printf("Counting toward acks: %v", ack)
+	task.Wg.Wait()
 
-		} else {
-			log.Printf("Received updated secret: %v", ack)
-			secret = ack.Secret
-		}
+	if secret, exists := c.cache.getSecretIfExists(args.Nonce, args.NumTrailingZeros, trace); exists {
+		c.tasks.deleteTask(taskKey)
+		return c.mineComplete(
+			reply,
+			CoordinatorSuccess{
+				Nonce:            args.Nonce,
+				NumTrailingZeros: args.NumTrailingZeros,
+				Secret:           secret,
+			},
+			trace)
 	}
 
-	// delete completed mine task from map
-	c.mineTasks.delete(args.Nonce, args.NumTrailingZeros)
-
-	return c.mineComplete(
-		reply,
-		CoordinatorSuccess{
-			Nonce:            args.Nonce,
-			NumTrailingZeros: args.NumTrailingZeros,
-			Secret:           secret,
-		},
-		trace)
+	// deleteTask completed mine task from map
+	c.tasks.deleteTask(taskKey)
+	return fmt.Errorf("Task did not contain a secret: %s", taskKey)
 }
 
 func (c *CoordRPCHandler) mineComplete(reply *CoordMineResponse, success CoordinatorSuccess, trace *tracing.Trace) error {
@@ -231,7 +236,18 @@ func (c *CoordRPCHandler) mineComplete(reply *CoordMineResponse, success Coordin
 // back to the Coordinator
 func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *Reply) error {
 	trace := c.tracer.ReceiveToken(args.Token)
+
+	taskKey := generateCoordTaskKey(args.Nonce, args.NumTrailingZeros)
+
+	c.tasks.mu.Lock()
+	curTask := c.tasks.tasks[taskKey]
+	c.tasks.mu.Unlock()
+
 	if args.Secret != nil {
+		// For result, need an additional cancel
+		curTask.Wg.Add(1)
+
+		// Double for Coord
 		trace.RecordAction(CoordinatorWorkerResult{
 			Nonce:            args.Nonce,
 			NumTrailingZeros: args.NumTrailingZeros,
@@ -262,7 +278,12 @@ func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *Reply) error {
 	} else {
 		log.Printf("Received worker cancel ack: %v", args)
 	}
-	c.mineTasks.setResult(args.Nonce, args.NumTrailingZeros, args)
+
+	// update cache
+	c.cache.update(args.Nonce, args.NumTrailingZeros, args.Secret, trace)
+
+	curTask.Wg.Done()
+
 	reply.Token = trace.GenerateToken()
 	return nil
 }
@@ -272,8 +293,11 @@ func (c *Coordinator) InitializeRPCs() error {
 		tracer:     c.tracer,
 		workers:    c.workers,
 		workerBits: uint(math.Log2(float64(len(c.workers)))),
-		mineTasks: TasksCache{
-			tasks: make(map[string]MineTask),
+		tasks: TasksCache{
+			tasks: make(map[string]*MineTask),
+		},
+		cache: Cache{
+			nonceCache: make(map[string]NonceCache),
 		},
 	}
 	server := rpc.NewServer()
@@ -312,73 +336,98 @@ func initializeWorkers(workers []*WorkerClient) error {
 	return nil
 }
 
-func (t *TasksCache) setResult(nonce []uint8, numTrailingZeros uint, result CoordResultArgs) {
-	//value, ok := t.tasks.Load(generateCoordTaskKey(nonce, numTrailingZeros))
-	//if !ok {
-	//	log.Fatal("No value for existing task")
-	//}
-	//if dominates(result.Secret, )
-	//task := value.(MineTask)
-	//task.ResultChan <- result
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	key := generateCoordTaskKey(nonce, numTrailingZeros)
-	if taskEntry, ok := t.tasks[key]; ok {
-		if taskEntry.CachedSecret == nil {
-			// cache miss
-		} else {
-			// cache hit
+// TODO: unit test
+func (c *Cache) getSecretIfExists(nonce []uint8, numTrailingZeros uint, trace *tracing.Trace) (Secret, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.nonceCache[generateCoordNonceKey(nonce)]; ok {
+		if numTrailingZeros <= entry.maxNumTrailingZeros {
+			trace.RecordAction(CacheHit{Nonce: nonce, NumTrailingZeros: numTrailingZeros, Secret: entry.secret})
+			return entry.secret, true
 		}
-		taskEntry.ResultChan <- result
-	} else {
-		// fatal, must have an entry
 	}
-
-}
-
-func (t *TasksCache) create(nonce []uint8, numTrailingZeros uint, val ResultChan) (Secret, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	key := generateCoordTaskKey(nonce, numTrailingZeros)
-	if taskEntry, ok := t.tasks[key]; ok {
-		secret, ok := taskEntry.checkSecret(nonce, numTrailingZeros)
-		if ok {
-			return secret, ok
-		}
-	} else {
-		// TODO: cache miss
-		t.tasks[generateCoordTaskKey(nonce, numTrailingZeros)] = MineTask{
-			ResultChan:   val,
-			CachedSecret: nil, // indicates a miss on subsequent requests before a result is found
-		}
-		log.Printf("New task added: %v\n", t.tasks)
-	}
+	trace.RecordAction(CacheMiss{Nonce: nonce, NumTrailingZeros: numTrailingZeros})
 	return nil, false
 }
 
-func (t *TasksCache) delete(nonce []uint8, numTrailingZeros uint) {
+// TODO: unit test
+func (c *Cache) update(nonce []uint8, numTrailingZeros uint, newSecret Secret, trace *tracing.Trace) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := generateCoordNonceKey(nonce)
+	if entry, exists := c.nonceCache[key]; exists {
+		if numTrailingZeros > entry.maxNumTrailingZeros {
+			trace.RecordAction(CacheMiss{Nonce: nonce, NumTrailingZeros: numTrailingZeros})
+			c.remove(key, nonce, entry.maxNumTrailingZeros, entry.secret, trace)
+			c.add(key, nonce, numTrailingZeros, newSecret, trace)
+			return
+		}
+		trace.RecordAction(CacheHit{Nonce: nonce, NumTrailingZeros: numTrailingZeros, Secret: entry.secret})
+		if numTrailingZeros == entry.maxNumTrailingZeros {
+			if dominates(newSecret, entry.secret) {
+				c.remove(key, nonce, entry.maxNumTrailingZeros, entry.secret, trace)
+				c.add(key, nonce, numTrailingZeros, newSecret, trace)
+				return
+			}
+		}
+		// else numTrailingZeros < entry.maxNumTrailingZeros - keep existing entry
+	} else {
+		trace.RecordAction(CacheMiss{Nonce: nonce, NumTrailingZeros: numTrailingZeros})
+		c.add(key, nonce, numTrailingZeros, newSecret, trace)
+	}
+}
+
+// assumes locks have been acquired
+func (c *Cache) add(key string, nonce []uint8, numTrailingZeros uint, newSecret Secret, trace *tracing.Trace) {
+	c.nonceCache[key] = NonceCache{numTrailingZeros, newSecret}
+	trace.RecordAction(CacheAdd{Nonce: nonce, NumTrailingZeros: numTrailingZeros, Secret: newSecret})
+}
+
+// assumes locks have been acquired and entry with key exists
+func (c *Cache) remove(key string, nonce []uint8, numTrailingZeros uint, oldSecret Secret, trace *tracing.Trace) {
+	delete(c.nonceCache, key)
+	trace.RecordAction(CacheRemove{Nonce: nonce, NumTrailingZeros: numTrailingZeros, Secret: oldSecret})
+}
+
+func (t *TasksCache) createTask(taskKey string) *MineTask {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.tasks, generateCoordTaskKey(nonce, numTrailingZeros))
+
+	task := &MineTask{
+		Secret:        nil, // indicates a miss on subsequent requests before a result is found
+		Mu:            &sync.Mutex{},
+		Wg:            &sync.WaitGroup{},
+		IsFirstResult: false,
+	}
+	t.tasks[taskKey] = task
+	log.Printf("New task added: %v\n", t.tasks)
+	return task
+}
+
+func (t *TasksCache) deleteTask(taskKey string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.tasks, taskKey)
 	log.Printf("Task deleted: %v\n", t.tasks)
 }
 
-func (mt *MineTask) checkSecret(nonce []uint8, numTrailingZeros uint) (Secret, bool) {
+func (mt *MineTask) lock() {
 	mt.Mu.Lock()
-	defer mt.Mu.Unlock()
-	if mt.CachedSecret == nil {
-		// TODO: cache miss
-		return nil, false
-	}
-	// TODO: cache hit
-	return mt.CachedSecret, true
+}
+
+func (mt *MineTask) unlock() {
+	mt.Mu.Unlock()
 }
 
 func generateCoordTaskKey(nonce []uint8, numTrailingZeros uint) string {
 	return fmt.Sprintf("%s|%d", hex.EncodeToString(nonce), numTrailingZeros)
 }
 
+func generateCoordNonceKey(nonce []uint8) string {
+	return fmt.Sprintf("%s", hex.EncodeToString(nonce))
+}
+
 // Return true if secret1 >= secret2
-func dominates(secret1 []uint8, secret2 []uint8) bool {
+func dominates(secret1 Secret, secret2 Secret) bool {
 	return bytes.Compare(secret1, secret2) >= 0
 }
