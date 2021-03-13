@@ -86,6 +86,7 @@ type WorkerRPCHandler struct {
 	coordinator *rpc.Client
 	mineTasks   WorkerMineTasks
 	resultChan  chan WorkerResultArg
+	cache       Cache
 }
 
 func NewWorker(config WorkerConfig) *Worker {
@@ -118,6 +119,9 @@ func (w *Worker) InitializeWorkerRPCs() error {
 			tasks: make(map[string]CancelChan),
 		},
 		resultChan: w.ResultChannel,
+		cache: Cache{
+			nonceCache: make(map[string]NonceCache),
+		},
 	})
 
 	// publish Worker RPCs
@@ -140,14 +144,28 @@ func (w *Worker) InitializeWorkerRPCs() error {
 // instructing the worker to solve a specific pow instance.
 func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *Reply) error {
 	trace := w.tracer.ReceiveToken(args.Token)
-	// add new task
-	cancelCh := make(chan struct{}, 1)
-	w.mineTasks.set(args.Nonce, args.NumTrailingZeros, args.WorkerByte, cancelCh)
+
 	trace.RecordAction(WorkerMine{
 		Nonce:            args.Nonce,
 		NumTrailingZeros: args.NumTrailingZeros,
 		WorkerByte:       args.WorkerByte,
 	})
+
+	if secret, exists := w.cache.getSecretIfExists(args.Nonce, args.NumTrailingZeros, trace); exists {
+		w.resultChan <- WorkerResultArg{
+			Nonce:            args.Nonce,
+			NumTrailingZeros: args.NumTrailingZeros,
+			WorkerByte:       args.WorkerByte,
+			Secret:           secret,
+			Token:            trace.GenerateToken(),
+		}
+		return nil
+	}
+
+	// add new task
+	cancelCh := make(chan struct{}, 1)
+	w.mineTasks.set(args.Nonce, args.NumTrailingZeros, args.WorkerByte, cancelCh)
+
 	go miner(w, args, trace, cancelCh)
 
 	reply.Token = trace.GenerateToken()
@@ -163,6 +181,9 @@ func (w *WorkerRPCHandler) Found(args WorkerCancelArgs, reply *Reply) error {
 		cancelChan <- struct{}{}
 		w.mineTasks.delete(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
 	}
+
+	w.cache.update(args.Nonce, args.NumTrailingZeros, args.Secret, trace)
+
 	reply.Token = trace.GenerateToken()
 	return nil
 }
