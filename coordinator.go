@@ -205,17 +205,16 @@ func (c *CoordRPCHandler) Mine(args CoordMineArgs, reply *CoordMineResponse) err
 
 	task.Wg.Wait()
 
-	if secret, exists := c.cache.getSecretIfExists(args.Nonce, args.NumTrailingZeros, trace); exists {
-		c.tasks.deleteTask(taskKey)
-		return c.mineComplete(
-			reply,
-			CoordinatorSuccess{
-				Nonce:            args.Nonce,
-				NumTrailingZeros: args.NumTrailingZeros,
-				Secret:           secret,
-			},
-			trace)
-	}
+	result := c.tasks.getSecretResult(taskKey)
+	c.tasks.deleteTask(taskKey)
+	return c.mineComplete(
+		reply,
+		CoordinatorSuccess{
+			Nonce:            args.Nonce,
+			NumTrailingZeros: args.NumTrailingZeros,
+			Secret:           result.Secret,
+		},
+		trace)
 
 	// deleteTask completed mine task from map
 	c.tasks.deleteTask(taskKey)
@@ -241,6 +240,9 @@ func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *Reply) error {
 
 	c.tasks.mu.Lock()
 	curTask := c.tasks.tasks[taskKey]
+	if curTask.Secret == nil {
+		curTask.Secret = args.Secret
+	}
 	c.tasks.mu.Unlock()
 
 	if args.Secret != nil {
@@ -275,12 +277,13 @@ func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *Reply) error {
 			}
 			c.tracer.ReceiveToken(calleeReply.Token)
 		}
+
+		// update cache only for Result
+		c.cache.update(args.Nonce, args.NumTrailingZeros, args.Secret, trace)
+
 	} else {
 		log.Printf("Received worker cancel ack: %v", args)
 	}
-
-	// update cache
-	c.cache.update(args.Nonce, args.NumTrailingZeros, args.Secret, trace)
 
 	curTask.Wg.Done()
 
@@ -409,6 +412,12 @@ func (t *TasksCache) deleteTask(taskKey string) {
 	defer t.mu.Unlock()
 	delete(t.tasks, taskKey)
 	log.Printf("Task deleted: %v\n", t.tasks)
+}
+
+func (t *TasksCache) getSecretResult(taskKey string) *MineTask {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.tasks[taskKey]
 }
 
 func (mt *MineTask) lock() {
