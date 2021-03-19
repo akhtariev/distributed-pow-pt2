@@ -39,25 +39,16 @@ func main() {
 	var client3 *distpow.Client
 	var client4 *distpow.Client
 
-	if *c1 {
-		client = setupClient("id", "config/client_config.json")
-		defer client.Close()
-	}
+	client = setupClient("id", "config/client_config.json")
+	defer client.Close()
 
-	if *c2 {
-		client2 = setupClient("id2", "config/client2_config.json")
-		defer client2.Close()
-	}
+	client2 = setupClient("id2", "config/client2_config.json")
 
-	if *c3 {
-		client3 = setupClient("id3", "config/client3_config.json")
-		defer client3.Close()
-	}
+	client3 = setupClient("id3", "config/client3_config.json")
+	defer client3.Close()
 
-	if *c4 {
-		client4 = setupClient("id4", "config/client4_config.json")
-		defer client4.Close()
-	}
+	client4 = setupClient("id4", "config/client4_config.json")
+	defer client4.Close()
 
 	endWaitCount := 0
 
