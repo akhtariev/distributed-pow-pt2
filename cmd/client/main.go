@@ -75,7 +75,7 @@ func main() {
 	}
 
 	if *c4 {
-		c2Wait += 2
+		c4Wait += 2
 		if err := client4.Mine([]uint8{5, 3, 2, 31}, 1); err != nil {
 			log.Println(err)
 		}
@@ -97,7 +97,7 @@ func main() {
 	}
 
 	if *c2 {
-		c4Wait += 1
+		c2Wait += 1
 		if err := client2.Mine([]uint8{2, 2, 2, 2}, 6); err != nil {
 			log.Println(err)
 		}
