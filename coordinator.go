@@ -249,6 +249,9 @@ func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *Reply) error {
 		// For result, need an additional cancel
 		curTask.Wg.Add(1)
 
+		// update cache only for Result
+		c.cache.update(args.Nonce, args.NumTrailingZeros, args.Secret, trace)
+
 		// Double for Coord
 		trace.RecordAction(CoordinatorWorkerResult{
 			Nonce:            args.Nonce,
@@ -277,9 +280,6 @@ func (c *CoordRPCHandler) Result(args CoordResultArgs, reply *Reply) error {
 			}
 			c.tracer.ReceiveToken(calleeReply.Token)
 		}
-
-		// update cache only for Result
-		c.cache.update(args.Nonce, args.NumTrailingZeros, args.Secret, trace)
 
 	} else {
 		log.Printf("Received worker cancel ack: %v", args)
