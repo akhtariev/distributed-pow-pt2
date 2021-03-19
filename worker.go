@@ -176,6 +176,13 @@ func (w *WorkerRPCHandler) Mine(args WorkerMineArgs, reply *Reply) error {
 // instructing the worker to stop solving a specific pow instance.
 func (w *WorkerRPCHandler) Found(args WorkerCancelArgs, reply *Reply) error {
 	trace := w.tracer.ReceiveToken(args.Token)
+
+	trace.RecordAction(WorkerCancel{
+		Nonce:            args.Nonce,
+		NumTrailingZeros: args.NumTrailingZeros,
+		WorkerByte:       args.WorkerByte,
+	})
+
 	cancelChan, ok := w.mineTasks.get(args.Nonce, args.NumTrailingZeros, args.WorkerByte)
 	if ok {
 		cancelChan <- struct{}{}
@@ -234,11 +241,6 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, trace *tracing.Trace, killC
 		for _, threadByte := range threadBytes {
 			select {
 			case <-killChan:
-				trace.RecordAction(WorkerCancel{
-					Nonce:            args.Nonce,
-					NumTrailingZeros: args.NumTrailingZeros,
-					WorkerByte:       args.WorkerByte,
-				})
 				w.resultChan <- WorkerResultArg{
 					Nonce:            args.Nonce,
 					NumTrailingZeros: args.NumTrailingZeros,
@@ -286,12 +288,6 @@ func miner(w *WorkerRPCHandler, args WorkerMineArgs, trace *tracing.Trace, killC
 				//       before we log the result we found, forcing WorkerCancel to be the last action logged, even in that case.
 				<-killChan
 
-				// and log it, which satisfies the (optional) stricter interpretation of WorkerCancel
-				trace.RecordAction(WorkerCancel{
-					Nonce:            args.Nonce,
-					NumTrailingZeros: args.NumTrailingZeros,
-					WorkerByte:       args.WorkerByte,
-				})
 				// ACK the cancellation; the coordinator will be waiting for this.
 				w.resultChan <- WorkerResultArg{
 					Nonce:            args.Nonce,
