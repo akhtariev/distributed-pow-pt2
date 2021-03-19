@@ -39,21 +39,33 @@ func main() {
 	var client3 *distpow.Client
 	var client4 *distpow.Client
 
-	client = setupClient("id", "config/client_config.json")
-	defer client.Close()
+	if *c1 {
+		client = setupClient("id", "config/client_config.json")
+		defer client.Close()
+	}
 
-	client2 = setupClient("id2", "config/client2_config.json")
+	if *c2 {
+		client2 = setupClient("id2", "config/client2_config.json")
+		defer client2.Close()
+	}
 
-	client3 = setupClient("id3", "config/client3_config.json")
-	defer client3.Close()
+	if *c3 {
+		client3 = setupClient("id3", "config/client3_config.json")
+		defer client3.Close()
+	}
 
-	client4 = setupClient("id4", "config/client4_config.json")
-	defer client4.Close()
+	if *c4 {
+		client4 = setupClient("id4", "config/client4_config.json")
+		defer client4.Close()
+	}
 
-	endWaitCount := 0
+	c1Wait := 0
+	c2Wait := 0
+	c3Wait := 0
+	c4Wait := 0
 
 	if *c1 {
-		endWaitCount += 2
+		c1Wait += 2
 		if err := client.Mine([]uint8{1, 2, 3, 4}, 4); err != nil {
 			log.Println(err)
 		}
@@ -63,7 +75,7 @@ func main() {
 	}
 
 	if *c4 {
-		endWaitCount += 2
+		c2Wait += 2
 		if err := client4.Mine([]uint8{5, 3, 2, 31}, 1); err != nil {
 			log.Println(err)
 		}
@@ -74,7 +86,7 @@ func main() {
 	}
 
 	if *c3 {
-		endWaitCount += 1
+		c3Wait += 1
 		if err := client3.Mine([]uint8{3, 3, 3, 3}, 5); err != nil {
 			log.Println(err)
 		}
@@ -85,7 +97,7 @@ func main() {
 	}
 
 	if *c2 {
-		endWaitCount += 1
+		c4Wait += 1
 		if err := client2.Mine([]uint8{2, 2, 2, 2}, 6); err != nil {
 			log.Println(err)
 		}
@@ -99,16 +111,19 @@ func main() {
 		}
 	}
 
-	for i := 0; i < endWaitCount; i++ {
-		select {
-		case mineResult := <-client.NotifyChannel:
-			log.Println(mineResult)
-		case mineResult := <-client2.NotifyChannel:
-			log.Println(mineResult)
-		case mineResult := <-client3.NotifyChannel:
-			log.Println(mineResult)
-		case mineResult := <-client4.NotifyChannel:
-			log.Println(mineResult)
-		}
+	for i := 0; i < c1Wait; i++ {
+		<-client.NotifyChannel
+	}
+
+	for i := 0; i < c2Wait; i++ {
+		<-client2.NotifyChannel
+	}
+
+	for i := 0; i < c3Wait; i++ {
+		<-client3.NotifyChannel
+	}
+
+	for i := 0; i < c4Wait; i++ {
+		<-client4.NotifyChannel
 	}
 }
